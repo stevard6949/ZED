@@ -1,0 +1,123 @@
+---
+title: "Projekt Zed elektrownia"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+author: "Bartosz Markowski"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+## Podsumowanie {#section1}
+W wczytanych danych by³0o bardzowiele atrybutów nic nie wnosz¹cych do analizy, zosta³y one odrzucone na podstawie korelacji, która praktycznie nie wystêpowa³a. Dwa atrybuty irradiamento oraz irr_pvgis_mod by³y ze sob¹ mocno skorelowane, dlatego postanowi³em pozbyæ siê irr_pvgis_mod ,poniewa¿ on mia³ mniejsz¹ korelacje. Na podsawie wykresu z korelacj¹ i przyjrzeniu siê wartoœci do analizyw zosta³y wybrane atrybuty: idsito, irradiamento, altitude, humidity, tempi, irri, dist, azimuthi. Podczas analizy danych zauwa¿y³em, ¿e atrybuty kwh i irradiamento posiadaj¹ du¿o wartoœci 0, dlatego na podstawie sredniej w miesi¹cu z danej godziny zosta³y one zast¹pione. Jednak niektórych nie duda³o siê zast¹piæ poniewa¿ by³y z godzin nocnych, dlatego postanowi³em usun¹æ te dane.
+
+## Biblioteki {#section2}
+```{r biblioteki, message = F, warning=FALSE}
+library(dplyr)
+library(corrplot)
+library('caret')
+library(gridExtra)
+library(ggplot2)
+library(plotly)
+```
+## Powtarzalnoœc {#section3}
+```{r powtarzalnosc}
+set.seed(12)
+```
+
+## Wczytanie danych {#section4}
+```{r wczytywanie}
+data <- read.csv('elektrownie.csv')
+data <- data %>% mutate(month= format(as.POSIXct(data, format='%m/%d/%Y %H:%M'), "%Y-%m"))
+data <- data %>% mutate(hour= as.numeric(format(as.POSIXct(data, format='%m/%d/%Y %H:%M'), "%H")))
+```
+
+## Brakuj¹ce dane {#section5}
+```{r brakujaceDane, warning=FALSE}
+meanIrradiamento <- data %>% filter(irradiamento != 0) %>% group_by(month, hour) %>% summarise(mean = mean(irradiamento))
+meanKwh <- data %>% filter(kwh != 0) %>% group_by(month, hour) %>% summarise(mean = mean(kwh))
+
+data <- data %>% mutate(irradiamento = ifelse(irradiamento != 0,
+                                      irradiamento,
+                                      as.numeric(meanIrradiamento[meanIrradiamento$hour == hour & meanIrradiamento$month == month,]$mean)
+                                              )) %>% filter(!is.na(irradiamento))
+data <- data %>% mutate(kwh = ifelse(kwh != 0,
+                                      kwh,
+                                      as.numeric(meanKwh[meanKwh$hour == hour & meanKwh$month == month,]$mean)
+                                              )) %>% filter(!is.na(kwh))
+
+```
+## Podstawowe statystyki {#section6}
+```{r podstawoweStatystyki}
+#liczba wierzy
+len <- nrow(data)
+print(len)
+#liczba kolumn
+clen <- ncol(data)
+print(clen)
+```
+
+
+
+```{r}
+iData <- data %>% select(irradiamento, altitude,humidity,tempi,irri,dist,azimuthi)
+iData%>% summary()
+```
+
+## Rozk³ad wybranych atrybutów {#section7}
+```{r rozklady, fig.width=10, fig.height=5}
+
+array <- list()
+for (col in colnames(iData)) {
+array[[col]] <-((ggplot(iData) +
+    aes_string(x=col) +
+    geom_histogram(bins = 30))) 
+}
+
+do.call(grid.arrange,c(array, ncol = 4))
+
+```
+
+
+## Korelacja miedzy atrybutami {#section8}
+```{r korelacja}
+data %>% select(-data, -month, -hour) %>% cor() ->corr
+corr %>% findCorrelation(cutoff = 0.2) -> result
+corrplot(corr[result,result])
+```
+
+## Interaktywny wykres {#section9}
+Chcia³em tutaj daæ wykres z podzia³em na dni, jednak wykres stawal siê wtedy bardzo nieczytelny bez przybli¿enia, a dodatkowo wygenerowany wykres bardzo obci¹¿a³ przegl¹darkê, dlatego ogranicz³em siê do œredniej z miesi¹ca na danym panelu.
+```{r interaktywny}
+plotData <- data %>% group_by(idsito, month) %>% summarise(kwh=sum(kwh))
+plot <- ggplot(data = plotData, aes(month,kwh, color=factor(idsito))) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplotly(plot)
+
+```
+
+## Tworzenie regesora {#section10}
+```{r nauka}
+lernData <- data %>% select(idsito, irradiamento, altitude,humidity,tempi,irri,dist,azimuthi, kwh)
+train <- createDataPartition(y=lernData$idsito, p = 0.7, list = F)
+trainData <- lernData[train,]
+testData <- lernData[-train,]
+
+
+model <- train(
+    kwh ~ .,
+    data = trainData,
+    method = "lm",
+    metric = "RMSE",
+    trControl = trainControl(method="repeatedcv",number = 2, repeats = 6)
+)
+test <- predict(model, newdata = testData);
+postResample(test, testData$kwh)
+
+```
+## Analiza regresora {#section11}
+Najwiêkszy wp³yw na wytwarzan¹ energiê ma nas³onecznienie, du¿y wp³yw przejawia te¿ zachmurzenie. Stworzony regesor uzyska³ RMSE na poziomie 0.116.
+```{r podsumowanie}
+model %>% summary()
+```
